@@ -6,7 +6,7 @@ using namespace std;
 
 char service_name_inside[] = "DirectoryMonitorService"; // Внутреннее имя сервиса
 char service_name_outside[] = "Directory Monitor Service"; // Внешнее имя сервиса
-char service_exe_path[] = "C:/Users/Anastasia/source/repos/Directory-Monitor-Service/Debug/DirectoryMonitorService.exe"; // Путь к сервису
+char service_exe_path[] = "C:/Users/akiri/source/repos/Directory-Monitor-Service/Debug/DirectoryMonitorService.exe"; // Путь к сервису
 char service_log_file_path[] = "C:/ServiceInformationFile.log"; // Путь к файлу, в который пишу информацию о статусе сервиса
 
 char name_pipe_read[] = "\\\\.\\pipe\\DirectoryMonitorPipeRead"; // Имя канала, по которому приходит информация от клиента
@@ -107,12 +107,20 @@ DWORD WINAPI DirectoryProcess(LPVOID lpParam)
 		NULL
 	);
 
+	char changes_in_directory_msg[512];
+	DWORD cbWritten;
+
 	if (hFolder == INVALID_HANDLE_VALUE)
 	{
-		out << "Unable to open directory!" << endl << flush;
+		strcpy_s(changes_in_directory_msg, "bad_dir");
+		WriteFile(hNamedPipeWrite, changes_in_directory_msg, strlen(changes_in_directory_msg) + 1, &cbWritten, NULL);
+
+		out << "Unable to open directory! Service is sending an error message to client." << endl << flush;
 		CloseHandle(hFolder);
 		return -1;
 	}
+	else
+		out << "Directory " << directory_path << " is under the monitoring!" << endl << flush;
 
 	OVERLAPPED PollingOverlap;
 
@@ -120,8 +128,6 @@ DWORD WINAPI DirectoryProcess(LPVOID lpParam)
 	int offset;
 	PollingOverlap.OffsetHigh = 0;
 	PollingOverlap.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-
-	char changes_in_directory_msg[512];
 
 	while (result)
 	{
@@ -180,81 +186,12 @@ DWORD WINAPI DirectoryProcess(LPVOID lpParam)
 			}
 
 			// Отправляем сообщение об изменении в файле клиенту
-			DWORD cbWritten;
 			WriteFile(hNamedPipeWrite, changes_in_directory_msg, strlen(changes_in_directory_msg) + 1, &cbWritten, NULL);
 			out << "Service sends via named pipe information: " << changes_in_directory_msg << endl << flush;
 
 			offset += pNotify->NextEntryOffset;
 		} while (pNotify->NextEntryOffset); //(offset != 0);
 	}
-	return 0;
-}
-
-DWORD WINAPI ClientPathsProcess(LPVOID lpParam)
-{
-	// Создаю именованный канал для чтения информации от клиента о том, какую папку нужно мониторить
-	hNamedPipeRead = CreateNamedPipe(
-		name_pipe_read, // имя канала
-		PIPE_ACCESS_INBOUND, // читаем из канала
-		PIPE_TYPE_MESSAGE | PIPE_WAIT, // синхронная передача сообщений
-		1, // максимальное количество экземпляров канала
-		0, // размер выходного буфера по умолчанию
-		0, // размер входного буфера по умолчанию
-		INFINITE, // время ожидания
-		NULL // защита по умолчанию
-	);
-
-	// проверяем на успешное создание канала
-	if (hNamedPipeRead == INVALID_HANDLE_VALUE)
-	{
-		out << "Creation of the named pipe failed." << endl
-			<< "The last error code: " << GetLastError() << endl << flush;
-		return -1;
-	}
-	else
-		out << "Pipe " << name_pipe_read << " is created." << endl << flush;
-
-	// Пишу в файл сообщение об ошибке, связанной с коннектом пользовательского приложения к каналу
-	if (!ConnectNamedPipe(hNamedPipeRead, NULL))
-	{
-		out << "The connection failed." << endl
-			<< "The last error code: " << GetLastError() << endl << flush;
-		CloseHandle(hNamedPipeRead);
-		return -1;
-	}
-	else
-		out << "Client successfully connected to " << name_pipe_read << endl << flush;
-
-	char directory_path_msg[512]; // Директория, которую нужно просматривать
-	DWORD cbRead;
-
-	// Бесконечно читаю путь к дикректории от клиента
-	while (true)
-	{
-		// Читаем от клиента путь к папке, которую нужно мониторить
-		ReadFile(hNamedPipeRead, directory_path_msg, 512, &cbRead, NULL);
-
-		// Если получен новый путь к мониторингу от клиента (длина сообщения не равна нулю)
-		if (cbRead != 0)
-		{
-			out << "Client has sent a new path for monitoring directory: " << directory_path_msg << endl << flush;
-
-			// Если поток для записи был создан, то прекращаем его работу и отключаем от канала
-			if (hDirectoryMonitorThread != NULL)
-			{
-				TerminateThread(hDirectoryMonitorThread, 0);
-				CloseHandle(hDirectoryMonitorThread);
-
-				DisconnectNamedPipe(hNamedPipeWrite);
-				CloseHandle(hNamedPipeWrite);
-			}
-
-			// Создаю поток для записи клиенту
-			hDirectoryMonitorThread = CreateThread(NULL, 0, DirectoryProcess, directory_path_msg, THREAD_ALL_ACCESS, NULL);
-			ResumeThread(hDirectoryMonitorThread);
-		}
-	}
-
 	return 0;
 }
 
@@ -313,12 +250,62 @@ void WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv)
 	out << "Service is creating general thread..." << endl << flush;
 	out << "Service name is: " << lpszArgv[0] << endl << flush;
 
-	// Создаю поток для чтения от клиента
-	hPathsProcessThread = CreateThread(NULL, 0, ClientPathsProcess, NULL, THREAD_ALL_ACCESS, NULL);
-	ResumeThread(hPathsProcessThread);
-	// CloseHandle(hPathsProcessThread);
+	// Создаю именованный канал для чтения информации от клиента о том, какую папку нужно мониторить
+	hNamedPipeRead = CreateNamedPipe(
+		"\\\\.\\pipe\\DirectoryMonitorPipeRead", // имя канала
+		PIPE_ACCESS_INBOUND, // читаем из канала
+		PIPE_TYPE_MESSAGE | PIPE_WAIT, // синхронная передача сообщений
+		1, // максимальное количество экземпляров канала
+		0, // размер выходного буфера по умолчанию
+		0, // размер входного буфера по умолчанию
+		INFINITE, // время ожидания
+		NULL // защита по умолчанию
+	);
 
-	out << "Thread for reading directory paths is created!" << endl << flush;
+	if (!ConnectNamedPipe(hNamedPipeRead, NULL))
+	{
+		out << "Connect named pipe failed." << endl
+			<< "The last error code: " << GetLastError() << endl << flush;
+		return;
+	}
+
+	char directory_path_msg[512]; // Директория, которую нужно просматривать
+	DWORD cbRead;
+	while (true)
+	{
+		// Считывание пути к папке
+		if (!ReadFile(hNamedPipeRead, directory_path_msg, 512, &cbRead, NULL))
+		{
+			out << "Client terminated session!" << endl << flush;
+			DisconnectNamedPipe(hNamedPipeWrite);
+			CloseHandle(hNamedPipeWrite);
+			return;
+		}
+
+		if (hDirectoryMonitorThread != NULL)
+		{
+			TerminateThread(hDirectoryMonitorThread, 0);
+			CloseHandle(hDirectoryMonitorThread);
+
+			DisconnectNamedPipe(hNamedPipeWrite);
+			CloseHandle(hNamedPipeWrite);
+		}
+		
+
+		// Запуск потока для мониторинга
+		hDirectoryMonitorThread = CreateThread(NULL, 0, DirectoryProcess, directory_path_msg, THREAD_ALL_ACCESS, NULL);
+
+		if (hDirectoryMonitorThread == NULL)
+		{
+			out << "Thread for monitoring directory wasn't created successfully." << endl << flush;
+			return;
+		}
+		
+		ResumeThread(hDirectoryMonitorThread);
+		//CloseHandle(hDirectoryMonitorThread);
+
+		out << "Service started monitoring directory: " << directory_path_msg << endl << flush;
+	}
 }
 
 bool InstallService()
@@ -598,20 +585,20 @@ bool StopService()
 	cout << "Service is going to close named pipes and stop threads:" << endl;
 
 	cout << "Pipe for writing changes in directory was disconnected and its handle was closed." << endl;
-	DisconnectNamedPipe(hNamedPipeWrite);
+	//DisconnectNamedPipe(hNamedPipeWrite);
 	//CloseHandle(hNamedPipeWrite);
 
 	cout << "Thread for monitoring directory for changes was terminated and its handle was closed." << endl;
-	TerminateThread(hDirectoryMonitorThread, 0);
-	CloseHandle(hDirectoryMonitorThread);
+	//TerminateThread(hDirectoryMonitorThread, 0);
+	//CloseHandle(hDirectoryMonitorThread);
 
 	cout << "Pipe for reading directory paths was disconnected and its handle was closed." << endl;
-	DisconnectNamedPipe(hNamedPipeRead);
+	//DisconnectNamedPipe(hNamedPipeRead);
 	//CloseHandle(hNamedPipeRead);
 
 	cout << "Thread for processing new directory paths for client was terminated and its handle was closed." << endl;
-	TerminateThread(hPathsProcessThread, 0);
-	CloseHandle(hPathsProcessThread);
+	//TerminateThread(hPathsProcessThread, 0);
+	//CloseHandle(hPathsProcessThread);
 
 	return true;
 }
