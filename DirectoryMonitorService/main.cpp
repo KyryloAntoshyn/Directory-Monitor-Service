@@ -12,17 +12,25 @@ using namespace std;
 
 char service_name_inside[] = "DirectoryMonitorService"; // Внутреннее имя сервиса
 char service_name_outside[] = "Directory Monitor Service"; // Внешнее имя сервиса
-char service_exe_path[] = "C:/Users/akiri/source/repos/Directory-Monitor-Service/Debug/DirectoryMonitorService.exe"; // Путь к сервису
+char service_exe_path[] = "C:/Users/Anastasia/source/repos/Directory-Monitor-Service/Debug/DirectoryMonitorService.exe"; // Путь к сервису
 char service_log_file_path[] = "C:/ServiceInformationFile.log"; // Путь к файлу, в который пишу информацию о статусе сервиса
 
 char name_pipe_read[] = "\\\\.\\pipe\\DirectoryMonitorPipeRead"; // Имя канала, по которому приходит информация от клиента
 char name_pipe_write[] = "\\\\.\\pipe\\DirectoryMonitorPipeWrite"; // Имя канала, по которому сервис передаёт инфомацию клиенту
 
-
 SERVICE_STATUS service_status;
 SERVICE_STATUS_HANDLE hServiceStatus;
 
 ofstream out;
+
+struct ThreadParams
+{
+	explicit ThreadParams(HANDLE h = NULL, char * p = NULL) :
+		hPipe(h), directory_path(p) {}
+
+	HANDLE  hPipe;
+	char* directory_path;
+};
 
 void WINAPI ServiceCtrlHandler(DWORD dwControl)
 {
@@ -57,32 +65,57 @@ void WINAPI ServiceCtrlHandler(DWORD dwControl)
 	return;
 }
 
-struct ThreadParams
-{
-	explicit ThreadParams(HANDLE h = NULL, char * p = NULL) :
-		hPipe(h), directory_path(p) {}
-
-	HANDLE  hPipe;
-	char* directory_path;
-};
-
 vector<string> split(string source, string delimiter)
 {
 	size_t pos = 0;
 	vector<string> tokens;
-	while ((pos = source.find(delimiter)) != std::string::npos) {
+	while ((pos = source.find(delimiter)) != string::npos)
+	{
 		tokens.push_back(source.substr(0, pos));
 		source.erase(0, pos + delimiter.length());
 	}
+
+	tokens.push_back(source); // Дописываю последний токен
+
 	return tokens;
+}
+
+bool containsOptional(vector<string> parameters, string parameter)
+{
+	if (std::find(parameters.begin(), parameters.end(), parameter) != parameters.end())
+		return true;
+	else
+		return false;
+}
+
+int getOptionalParameter(vector<string> parameters, string parameter)
+{
+	if (parameter == "name" && containsOptional(parameters, parameter))
+		return FILE_NOTIFY_CHANGE_FILE_NAME;
+
+	if (parameter == "attributes" && containsOptional(parameters, parameter))
+		return FILE_NOTIFY_CHANGE_ATTRIBUTES;
+
+	return NULL;
+}
+
+bool watchSubtree(vector<string> parameters, string parameter)
+{
+	if (parameter == "tree" && containsOptional(parameters, parameter))
+		return true;
+	else 
+		return false;
 }
 
 DWORD WINAPI DirectoryChangesProcessThread(LPVOID lpParam) 
 {
 	ThreadParams * parameters = (ThreadParams*)lpParam;
 
+	HANDLE hNamedPipeWrite = (HANDLE)parameters->hPipe;
+
+	vector<string> optional_params = split(parameters->directory_path, "_");
 	char directory_path[512];
-	strcpy_s(directory_path, parameters->directory_path);
+	strcpy_s(directory_path, optional_params.at(0).c_str()); // Путь к директории
 
 	char buf[2048];
 	DWORD nRet;
@@ -103,7 +136,7 @@ DWORD WINAPI DirectoryChangesProcessThread(LPVOID lpParam)
 	if (hFolder == INVALID_HANDLE_VALUE)
 	{
 		strcpy_s(directory_changes, "bad_dir");
-		WriteFile(parameters->hPipe, directory_changes, strlen(directory_changes) + 1, &cbWritten, NULL);
+		WriteFile(hNamedPipeWrite, directory_changes, strlen(directory_changes) + 1, &cbWritten, NULL);
 
 		out << "Unable to open directory! Service is sending an error message to client." << endl << flush;
 		CloseHandle(hFolder);
@@ -119,18 +152,16 @@ DWORD WINAPI DirectoryChangesProcessThread(LPVOID lpParam)
 	PollingOverlap.OffsetHigh = 0;
 	PollingOverlap.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 
-	string ch = "a";
-
 	while (result)
 	{
 		result = ReadDirectoryChangesW(
 			hFolder,
 			&buf,
 			sizeof(buf),
-			ch == "a" ? TRUE : FALSE, // Отслеживать ли дерево
-			FILE_NOTIFY_CHANGE_FILE_NAME | // Виды изменений
+			watchSubtree(optional_params, "tree"), // Отслеживать ли дерево
+			getOptionalParameter(optional_params, "name") |  // Отслеживать ли изменение имени
 			FILE_NOTIFY_CHANGE_DIR_NAME |
-			FILE_NOTIFY_CHANGE_ATTRIBUTES |
+			getOptionalParameter(optional_params, "attributes") | // Отслеживать ли изменение атрибутов
 			FILE_NOTIFY_CHANGE_SIZE |
 			FILE_NOTIFY_CHANGE_LAST_WRITE |
 			FILE_NOTIFY_CHANGE_LAST_ACCESS |
@@ -175,7 +206,7 @@ DWORD WINAPI DirectoryChangesProcessThread(LPVOID lpParam)
 				strcat_s(directory_changes, filename);
 				break;
 			case FILE_ACTION_RENAMED_NEW_NAME:
-				strcpy_s(directory_changes, "File(directory) name change to a brand new one occured. File(directory) name is: ");
+				strcpy_s(directory_changes, "File(directory) name change to a brand new one occured. New file(directory) name is: ");
 				strcat_s(directory_changes, filename);
 				break;
 			default:
@@ -185,7 +216,7 @@ DWORD WINAPI DirectoryChangesProcessThread(LPVOID lpParam)
 			}
 
 			// Отправляем сообщение об изменении в файле клиенту
-			WriteFile(parameters->hPipe, directory_changes, strlen(directory_changes) + 1, &cbWritten, NULL);
+			WriteFile(hNamedPipeWrite, directory_changes, strlen(directory_changes) + 1, &cbWritten, NULL);
 			out << "Service sends via named pipe information: " << directory_changes << endl << flush;
 
 			offset += pNotify->NextEntryOffset;
@@ -262,7 +293,7 @@ DWORD WINAPI DirectoryPathProcessThread(LPVOID lpParam)
 			ThreadParams* parameters = new ThreadParams(hNamedPipeWrite, directory_path);
 
 			// Создаю поток для мониторинга конкретного пути
-			HANDLE hThread = CreateThread(
+			hThread = CreateThread(
 				NULL,							// no security attribute 
 				0,								// default stack size 
 				DirectoryChangesProcessThread,  // thread proc
@@ -412,6 +443,7 @@ bool InstallService()
 		NULL,
 		SC_MANAGER_CREATE_SERVICE
 	);
+
 	if (hServiceControlManager == NULL)
 	{
 		cout << "Open service control manager failed." << endl
@@ -495,6 +527,7 @@ bool RemoveService()
 		service_name_inside,
 		SERVICE_STOP | DELETE
 	);
+
 	if (hService == NULL)
 	{
 		cout << "Open service failed." << endl
@@ -544,6 +577,7 @@ bool RunService()
 		NULL,
 		SC_MANAGER_CONNECT
 	);
+
 	if (hServiceControlManager == NULL)
 	{
 		cout << "Open service control manager failed." << endl
@@ -621,6 +655,7 @@ bool StopService()
 		NULL, // активная база данных сервисов
 		SC_MANAGER_CONNECT // соединение с менеджером сервисов
 	);
+
 	if (hServiceControlManager == NULL)
 	{
 		cout << "Open service control manager failed." << endl
@@ -630,6 +665,7 @@ bool StopService()
 
 		return false;
 	}
+
 	cout << "Service control manager is opened." << endl
 		<< "Press any key to continue." << endl;
 	cin.get();
@@ -660,6 +696,11 @@ bool StopService()
 	))
 	{
 		cout << "An error occured while quering service." << endl;
+
+		// Закрываем дескрипторы
+		CloseServiceHandle(hService);
+		CloseServiceHandle(hServiceControlManager);
+
 		return false;
 	}
 	else
@@ -667,6 +708,11 @@ bool StopService()
 		if (service_status.dwCurrentState == SERVICE_STOPPED)
 		{
 			cout << "Service is already stopped!" << endl;
+
+			// Закрываем дескрипторы
+			CloseServiceHandle(hService);
+			CloseServiceHandle(hServiceControlManager);
+
 			return true;
 		}
 	}
@@ -674,24 +720,28 @@ bool StopService()
 	// Остановка сервиса
 	ControlService(hService, SERVICE_CONTROL_STOP, &service_status);
 
+	// Закрываем дескрипторы
+	CloseServiceHandle(hService);
+	CloseServiceHandle(hServiceControlManager);
+
 	cout << "Service has been stopped.\n\n";
 
 	// Закрытие каналов и остановка потоков сервиса
-	cout << "Service is going to close named pipes and stop threads:" << endl;
+	//cout << "Service is going to close named pipes and stop threads:" << endl;
 
-	cout << "Pipe for writing changes in directory was disconnected and its handle was closed." << endl;
+	//cout << "Pipe for writing changes in directory was disconnected and its handle was closed." << endl;
 	//DisconnectNamedPipe(hNamedPipeWrite);
 	//CloseHandle(hNamedPipeWrite);
 
-	cout << "Thread for monitoring directory for changes was terminated and its handle was closed." << endl;
+	//cout << "Thread for monitoring directory for changes was terminated and its handle was closed." << endl;
 	//TerminateThread(hDirectoryMonitorThread, 0);
 	//CloseHandle(hDirectoryMonitorThread);
 
-	cout << "Pipe for reading directory paths was disconnected and its handle was closed." << endl;
+	//cout << "Pipe for reading directory paths was disconnected and its handle was closed." << endl;
 	//DisconnectNamedPipe(hNamedPipeRead);
 	//CloseHandle(hNamedPipeRead);
 
-	cout << "Thread for processing new directory paths for client was terminated and its handle was closed." << endl;
+	//cout << "Thread for processing new directory paths for client was terminated and its handle was closed." << endl;
 	//TerminateThread(hPathsProcessThread, 0);
 	//CloseHandle(hPathsProcessThread);
 
