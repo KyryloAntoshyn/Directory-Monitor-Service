@@ -6,7 +6,7 @@ using namespace std;
 
 char service_name_inside[] = "DirectoryMonitorService"; // Внутреннее имя сервиса
 char service_name_outside[] = "Directory Monitor Service"; // Внешнее имя сервиса
-char service_exe_path[] = "C:/Users/Anastasia/source/repos/Directory-Monitor-Service/Debug/DirectoryMonitorService.exe"; // Путь к сервису
+char service_exe_path[] = "C:/Users/Anastasia/source/repos/Directory-Monitor-Service/DirectoryMonitorService.exe"; // Путь к сервису
 char service_log_file_path[] = "C:/ServiceInformationFile.log"; // Путь к файлу, в который пишу информацию о статусе сервиса
 
 char name_pipe_read[] = "\\\\.\\pipe\\DirectoryMonitorPipeRead"; // Имя канала, по которому приходит информация от клиента
@@ -126,11 +126,30 @@ DWORD WINAPI DirectoryChangesProcessThread(LPVOID lpParam)
 
 	char directory_changes[512];
 	DWORD cbWritten;
+	bool fSuccess;
 
 	if (hFolder == INVALID_HANDLE_VALUE)
 	{
 		strcpy_s(directory_changes, "bad_dir");
-		WriteFile(hNamedPipeWrite, directory_changes, strlen(directory_changes) + 1, &cbWritten, NULL);
+
+		fSuccess =  WriteFile(hNamedPipeWrite, directory_changes, strlen(directory_changes) + 1, &cbWritten, NULL);
+
+		// Проблемы с соединением
+		if (!fSuccess || cbWritten == 0)
+		{
+			if (GetLastError() == ERROR_BROKEN_PIPE)
+			{
+				out << "Client disconnected." << endl
+					<< "The last error code: " << GetLastError() << endl << flush;
+			}
+			else
+			{
+				out << "Read file failed." << endl
+					<< "The last error code: " << GetLastError() << endl << flush;
+			}
+			CloseHandle(hFolder);
+			return -1;
+		}
 
 		out << "Unable to open directory! Service is sending an error message to client." << endl << flush;
 		CloseHandle(hFolder);
@@ -210,7 +229,24 @@ DWORD WINAPI DirectoryChangesProcessThread(LPVOID lpParam)
 			}
 
 			// Отправляем сообщение об изменении в файле клиенту
-			WriteFile(hNamedPipeWrite, directory_changes, strlen(directory_changes) + 1, &cbWritten, NULL);
+			bool fSuccess = WriteFile(hNamedPipeWrite, directory_changes, strlen(directory_changes) + 1, &cbWritten, NULL);
+
+			// Проблемы с соединением
+			if (!fSuccess || cbWritten == 0)
+			{
+				if (GetLastError() == ERROR_BROKEN_PIPE)
+				{
+					out << "Client disconnected." << endl
+						<< "The last error code: " << GetLastError() << endl << flush;
+				}
+				else
+				{
+					out << "Read file failed." << endl
+						<< "The last error code: " << GetLastError() << endl << flush;
+				}
+				return -1;
+			}
+
 			out << "Service sends via named pipe information: " << directory_changes << endl << flush;
 
 			offset += pNotify->NextEntryOffset;
@@ -259,16 +295,16 @@ DWORD WINAPI DirectoryPathProcessThread(LPVOID lpParam)
 
 		// Создаю новый канал для клиента
 		hNamedPipeWrite = CreateNamedPipe(
-			name_pipe_write,          // pipe name 
-			PIPE_ACCESS_OUTBOUND,      // write access 
-			PIPE_TYPE_MESSAGE |       // message type pipe 
-			PIPE_READMODE_MESSAGE |   // message-read mode 
-			PIPE_WAIT,                // blocking mode 
-			PIPE_UNLIMITED_INSTANCES, // max. instances  
-			512,                  // output buffer size 
-			512,                  // input buffer size 
-			0,                        // client time-out 
-			NULL);                    // default security attribute
+			name_pipe_write,
+			PIPE_ACCESS_OUTBOUND, 
+			PIPE_TYPE_MESSAGE |
+			PIPE_READMODE_MESSAGE |
+			PIPE_WAIT,
+			PIPE_UNLIMITED_INSTANCES,
+			512,
+			512,
+			0,
+			NULL);
 
 		if (hNamedPipeWrite == INVALID_HANDLE_VALUE)
 		{
@@ -282,18 +318,18 @@ DWORD WINAPI DirectoryPathProcessThread(LPVOID lpParam)
 
 		if (fConnected)
 		{
-			out << "Client connected, creating a processing thread." << endl << flush;
+			out << "Client connected, creating a processing changes thread." << endl << flush;
 
 			ThreadParams* parameters = new ThreadParams(hNamedPipeWrite, directory_path);
 
 			// Создаю поток для мониторинга конкретного пути
 			hThread = CreateThread(
-				NULL,							// no security attribute 
-				0,								// default stack size 
-				DirectoryChangesProcessThread,  // thread proc
-				parameters,						// thread parameter 
-				0,								// not suspended 
-				&dwThreadId);					// returns thread ID 
+				NULL,
+				0,
+				DirectoryChangesProcessThread,
+				parameters,
+				0,
+				&dwThreadId);
 
 			if (hThread == NULL)
 			{
@@ -305,7 +341,7 @@ DWORD WINAPI DirectoryPathProcessThread(LPVOID lpParam)
 				CloseHandle(hThread);
 		}
 		else
-			// The client could not connect, so close the pipe. 
+			// Клиент не может подключиться
 			CloseHandle(hNamedPipeWrite);
 	}
 
@@ -378,16 +414,16 @@ void WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv)
 	{
 		// Создаю новый канал для клиента
 		hNamedPipeRead = CreateNamedPipe(
-			name_pipe_read,           // pipe name 
-			PIPE_ACCESS_INBOUND,      // read access 
-			PIPE_TYPE_MESSAGE |       // message type pipe 
-			PIPE_READMODE_MESSAGE |   // message-read mode 
-			PIPE_WAIT,                // blocking mode 
-			PIPE_UNLIMITED_INSTANCES, // max. instances  
-			512,					  // output buffer size 
-			512,					  // input buffer size 
-			0,                        // client time-out 
-			NULL);                    // default security attribute
+			name_pipe_read,
+			PIPE_ACCESS_INBOUND,
+			PIPE_TYPE_MESSAGE |
+			PIPE_READMODE_MESSAGE |
+			PIPE_WAIT,
+			PIPE_UNLIMITED_INSTANCES, 
+			512,
+			512,
+			0,
+			NULL);
 
 		if (hNamedPipeRead == INVALID_HANDLE_VALUE)
 		{
@@ -401,16 +437,16 @@ void WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv)
 
 		if (fConnected)
 		{
-			out << "Client connected, creating a processing thread." << endl << flush;
+			out << "Client connected, creating a processing paths thread." << endl << flush;
 
-			// Create a thread for this client. 
+			// Создаём поток для обработки клиента 
 			hThread = CreateThread(
-				NULL,              // no security attribute 
-				0,                 // default stack size 
-				DirectoryPathProcessThread,    // thread proc
-				(LPVOID)hNamedPipeRead,    // thread parameter 
-				0,                 // not suspended 
-				&dwThreadId);      // returns thread ID 
+				NULL,
+				0,
+				DirectoryPathProcessThread,
+				(LPVOID)hNamedPipeRead,
+				0,
+				&dwThreadId);
 
 			if (hThread == NULL)
 			{
@@ -422,7 +458,7 @@ void WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv)
 				CloseHandle(hThread);
 		}
 		else
-			// The client could not connect, so close the pipe. 
+			// Клиент не может подключиться 
 			CloseHandle(hNamedPipeRead);
 	}
 }
@@ -719,25 +755,6 @@ bool StopService()
 	CloseServiceHandle(hServiceControlManager);
 
 	cout << "Service has been stopped.\n\n";
-
-	// Закрытие каналов и остановка потоков сервиса
-	//cout << "Service is going to close named pipes and stop threads:" << endl;
-
-	//cout << "Pipe for writing changes in directory was disconnected and its handle was closed." << endl;
-	//DisconnectNamedPipe(hNamedPipeWrite);
-	//CloseHandle(hNamedPipeWrite);
-
-	//cout << "Thread for monitoring directory for changes was terminated and its handle was closed." << endl;
-	//TerminateThread(hDirectoryMonitorThread, 0);
-	//CloseHandle(hDirectoryMonitorThread);
-
-	//cout << "Pipe for reading directory paths was disconnected and its handle was closed." << endl;
-	//DisconnectNamedPipe(hNamedPipeRead);
-	//CloseHandle(hNamedPipeRead);
-
-	//cout << "Thread for processing new directory paths for client was terminated and its handle was closed." << endl;
-	//TerminateThread(hPathsProcessThread, 0);
-	//CloseHandle(hPathsProcessThread);
 
 	return true;
 }
