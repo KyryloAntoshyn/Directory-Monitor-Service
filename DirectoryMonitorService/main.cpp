@@ -1,14 +1,8 @@
 ﻿#include "windows.h"
 #include <iostream>
 #include "fstream"
-#include <string>
-#include <stdio.h> 
-#include <tchar.h>
-#include <strsafe.h>
 #include <vector>
 using namespace std;
-
-#define BUFSIZE 512
 
 char service_name_inside[] = "DirectoryMonitorService"; // Внутреннее имя сервиса
 char service_name_outside[] = "Directory Monitor Service"; // Внешнее имя сервиса
@@ -18,19 +12,10 @@ char service_log_file_path[] = "C:/ServiceInformationFile.log"; // Путь к �
 char name_pipe_read[] = "\\\\.\\pipe\\DirectoryMonitorPipeRead"; // Имя канала, по которому приходит информация от клиента
 char name_pipe_write[] = "\\\\.\\pipe\\DirectoryMonitorPipeWrite"; // Имя канала, по которому сервис передаёт инфомацию клиенту
 
-SERVICE_STATUS service_status;
-SERVICE_STATUS_HANDLE hServiceStatus;
+SERVICE_STATUS service_status; // Структура состояния сервиса
+SERVICE_STATUS_HANDLE hServiceStatus; // Дескриптор структуры состояния сервиса
 
-ofstream out;
-
-struct ThreadParams
-{
-	explicit ThreadParams(HANDLE h = NULL, char * p = NULL) :
-		hPipe(h), directory_path(p) {}
-
-	HANDLE  hPipe;
-	char* directory_path;
-};
+ofstream out; // Поток для записи цикла работы сервиса в .log файл
 
 void WINAPI ServiceCtrlHandler(DWORD dwControl)
 {
@@ -64,6 +49,15 @@ void WINAPI ServiceCtrlHandler(DWORD dwControl)
 
 	return;
 }
+
+struct ThreadParams
+{
+	explicit ThreadParams(HANDLE h = NULL, char * p = NULL) :
+		hPipe(h), directory_path(p) {}
+
+	HANDLE  hPipe;
+	char* directory_path;
+};
 
 vector<string> split(string source, string delimiter)
 {
@@ -271,8 +265,8 @@ DWORD WINAPI DirectoryPathProcessThread(LPVOID lpParam)
 			PIPE_READMODE_MESSAGE |   // message-read mode 
 			PIPE_WAIT,                // blocking mode 
 			PIPE_UNLIMITED_INSTANCES, // max. instances  
-			BUFSIZE,                  // output buffer size 
-			BUFSIZE,                  // input buffer size 
+			512,                  // output buffer size 
+			512,                  // input buffer size 
 			0,                        // client time-out 
 			NULL);                    // default security attribute
 
@@ -390,8 +384,8 @@ void WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv)
 			PIPE_READMODE_MESSAGE |   // message-read mode 
 			PIPE_WAIT,                // blocking mode 
 			PIPE_UNLIMITED_INSTANCES, // max. instances  
-			BUFSIZE,                  // output buffer size 
-			BUFSIZE,                  // input buffer size 
+			512,					  // output buffer size 
+			512,					  // input buffer size 
 			0,                        // client time-out 
 			NULL);                    // default security attribute
 
