@@ -6,7 +6,7 @@ using namespace std;
 
 char service_name_inside[] = "DirectoryMonitorService"; // Внутреннее имя сервиса
 char service_name_outside[] = "Directory Monitor Service"; // Внешнее имя сервиса
-char service_exe_path[] = "C:/Users/Anastasia/source/repos/Directory-Monitor-Service/DirectoryMonitorService.exe"; // Путь к сервису
+char service_exe_path[] = "C:/DirectoryMonitorService.exe"; // Путь к сервису
 char service_log_file_path[] = "C:/ServiceInformationFile.log"; // Путь к файлу, в который пишу информацию о статусе сервиса
 
 char name_pipe_read[] = "\\\\.\\pipe\\DirectoryMonitorPipeRead"; // Имя канала, по которому приходит информация от клиента
